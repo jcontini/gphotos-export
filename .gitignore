@@ -1,5 +1,7 @@
+.vscode/
 *.egg-info
 *.md
 *.db
+venv/
 build/
 dist/
