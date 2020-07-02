@@ -5,7 +5,7 @@ import click, utils
 @click.argument('path')
 def main(path):
     print("Path = %s" % path)
-    utils.enumerate_zips(path)
+    utils.fullrun(path)
 
 if __name__ == '__main__':
     main()

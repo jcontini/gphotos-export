@@ -1,4 +1,5 @@
 import os, glob, json, sqlite_utils, zipfile
+from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
 db = sqlite_utils.Database(db_file)
@@ -24,7 +25,7 @@ def index_zip_media(zf):
                     'archive':zipname,
                     'hangouts':1 if 'Hangout_' in filepath else 0
                     })
-        db['index'].upsert_all(media,alter=True,pk="file")
+        db['media'].upsert_all(media,alter=True,pk="file")
         db['meta'].upsert_all(meta,alter=True,pk="file")
 
 def pull_metadata(path):
@@ -45,12 +46,9 @@ def pull_metadata(path):
                             "tsf_taken": r["photoTakenTime"]["formatted"],
                             "tsf_created": r["creationTime"]["formatted"],
                             "tsf_modified": r["modificationTime"]["formatted"],
-                            "geo_lat": r["geoData"]["latitude"],
-                            "geoExif_lat": r["geoDataExif"]["latitude"],
-                            "geo_long": r["geoData"]["longitude"],
-                            "geoExif_long": r["geoDataExif"]["longitude"],
-                            "geo_alt": r["geoData"]["altitude"],
-                            "geoExif_alt": r["geoDataExif"]["altitude"],
+                            "geo_lat": r["geoDataExif"]["latitude"],
+                            "geo_long": r["geoDataExif"]["longitude"],
+                            "geo_alt": r["geoDataExif"]["altitude"],
                             "description": r["description"],
                             "imageViews": int(r.get("imageViews",0)),
                             "trashed": r.get("trashed",0)
@@ -60,8 +58,30 @@ def pull_metadata(path):
                         print("Issue parsing %s" % row["file"])
                         pass
 
-def enumerate_zips(path):
+def match_meta():
+    num_match=0;num_nomatch=0
+    for r in db['media'].rows:
+        filepath, ext = os.path.splitext(r['file'])
+        filepath = filepath.split('(')[0]
+        if filepath[-7:] == '-edited':
+            metapath = filepath[:-7] + ext + '.json'
+            #TODO: Fix case problem
+        else:
+            metapath = filepath + ext + '.json'
+        try:
+            metadata = db["meta"].get(metapath)
+            d = {"metapath": metapath}
+            db['media'].update(r['file'],d, alter=True)
+            num_match +=1
+        except NotFoundError:
+            print('%s != %s' % (r['file'],metapath))
+            num_nomatch +=1
+    print("%s medias matched with metadata" % num_match)
+    print("%s medias with no match" % num_nomatch)
+        
+def fullrun(path):
     zipfiles = glob.glob(path+'*.zip')
     for zf in zipfiles:
         index_zip_media(zf)
     pull_metadata(path)
+    match_meta()
