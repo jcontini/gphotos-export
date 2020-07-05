@@ -9,14 +9,18 @@ def index_zip_media(zf):
         zipname = os.path.basename(zf)
         media=[];meta=[]
         files = archive.namelist()
+        ignore = ["metadata", "print-subscriptions", "shared_album_comments"]
+
         for filepath in files:
             ext = os.path.splitext(filepath)[1]
             if ext == '.json':
-                if 'metadata' not in filepath:
+                if not any(x in filepath for x in ignore):
                     meta.append({
                         'file':filepath,
                         'archive':zipname
                     })
+            elif ext == '.html':
+                pass
             else:
                 media.append({
                     'file':filepath,
@@ -68,6 +72,8 @@ def check_meta(metapath):
 def match_meta():
     if "nomatch" not in db.view_names():
         db.create_view("nomatch", """select * from media where metapath is null and edited is not 1""")
+    if "matches" not in db.view_names():
+        db.create_view("matches", """select * from media where metapath is not null""")
 
     for r in db['media'].rows:
         fullpath, ext = os.path.splitext(r['file'])
@@ -101,20 +107,28 @@ def match_meta():
                 db['media'].update(r['file'],{"metapath": metapath}, alter=True)
                 continue
 
-        #Handle case: Different files ending in (1),(2) etc drop extension if non-() exists
+        #Handle case: When file ends in (1) etc
         re_pattern = '\(\d\)\.'
         re_matches = re.findall(re_pattern,filename)
         if len(re_matches) > 0:
-            meta1 = fullpath.rsplit('(',1)[0] + ext + '.json'
-            if check_meta(meta1):
-                metapath = meta1
+            metapath = fullpath.rsplit('(',1)[0] + ext + '.json' # If google made the (d)
+            if check_meta(metapath):
                 db['media'].update(r['file'],{"metapath": metapath}, alter=True)
                 continue
 
+        #Handle other cases where the extension is dropped in metapath
+        metapath = fullpath + '.json' # If the filename originally had (d)
+        if check_meta(metapath):
+            db['media'].update(r['file'],{"metapath": metapath}, alter=True)
+            continue
+
+        #Catch-all
         print("No match: %s" % filename)
 
     unmatched = db['nomatch'].count
+    matched = db['matches'].count
     print('--- Media Report ---')
+    print("%s media files matched with metadata" % matched)
     print("%s remaining with no match" % unmatched)
         
 def fullrun(path):
