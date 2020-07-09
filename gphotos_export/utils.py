@@ -7,7 +7,7 @@ db = sqlite_utils.Database(db_file)
 def index_zip_media(zf):
     with zipfile.ZipFile(zf, 'r') as archive:
         zipname = os.path.basename(zf)
-        media=[];meta=[];albums=[]
+        media=[];meta=[]
         files = archive.namelist()
         nomedia = ["print-subscriptions", "shared_album_comments"]
 
@@ -22,9 +22,9 @@ def index_zip_media(zf):
             elif ext != '.html':
                 media.append({
                     'path':filepath,
+                    'filename': filepath.rsplit('/',1)[1],
                     'ext': str.upper(ext[1:]),
                     'archive':zipname,
-                    'hangouts':1 if 'Hangout_' in filepath else 0,
                     'edited':0
                     })
         db['media_files'].upsert_all(media,alter=True,pk="path")
@@ -34,25 +34,22 @@ def get_media_meta(path):
     print(">> Parsing metadata from archives...")
     if "archives" not in db.view_names():
         db.create_view("archives", """select archive from meta_files group by archive""")
-    if "albums" not in db.view_names():
-        db.create_view("albums", """select path,archive,title,description from meta_files where type = 'album' order by title asc""")
     for row in db["archives"].rows:
         with zipfile.ZipFile(path+row["archive"], 'r') as archive:
             for row in db['meta_files'].rows_where("archive = ?", [row["archive"]]):
                 with archive.open(row["path"]) as metafile:
                     r = json.loads(metafile.read())
                     try:
-                        # Extract Album info
                         if 'metadata' in row["path"]:
+                            # Extract Album info
                             d = {
                                 "type": 'album',
                                 "title": r["albumData"]["title"],
                                 "description": r["albumData"]["description"]
                             }
                             db['meta_files'].update(row["path"],d, alter=True)
-
-                        # Extract Media info
                         else:
+                            # Extract Media info
                             ts_taken = time.gmtime(int(r["photoTakenTime"]["timestamp"]))
                             d = {
                                 "type": 'media',
@@ -149,26 +146,51 @@ def match_meta():
 
 def prep_export():
     print('>> Preparing new folder structure with albums...')
-    if "new_folders" not in db.view_names():
-        db.create_view("new_folders", """select * from media_files where metapath is null and edited is not 1""")
+    re_pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}'
     for r in db['media_files'].rows_where("metapath is not null"):
         current_folder = r['path'].rsplit('/',2)[1]
-        re_pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}'
-        # If current folder has 0000-00-00 format, use date instead
-        if re.match(re_pattern,current_folder[:10]):
-            meta = db['meta_files'].get(r['metapath'])
-            folder = str(meta['year'])
-        # If Hangouts, use hangouts folder
-        elif current_folder[:8] == 'Hangout:':
+        meta = db['meta_files'].get(r['metapath'])
+
+        # If Hangouts, put in /Hangouts folder
+        if current_folder[:8] == 'Hangout_':
             subfolder = current_folder[9:]
             folder = 'Hangouts/' + subfolder
-        # Otherwise, use same album name
+
+        # If file is in trash, put in /Trash folder
+        elif meta['trashed'] == 1:
+            folder = 'Trashed/' + current_folder
+
+        # If current folder has 0000-00-00 format, put in Library/[year] folders
+        elif re.match(re_pattern,current_folder[:10]):
+            folder = 'Library/' + str(meta['year'])
+
+        # Otherwise, put in Album folder
         else:
-            folder = current_folder
+            folder = 'Albums/' + current_folder
         db['media_files'].update(r['path'],{"newfolder": folder}, alter=True)
 
+def add_album_media():
+    # Go through album files, add to library (year folders) if not already in there
+        # Some won't be like /Archive, /ProfilePhotos, etc
+    if "albums" not in db.view_names():
+        db.create_view("albums", """select newfolder from media_files where newfolder is not null group by newfolder""")
+
+    todo = '''
+        - prep a new 'export' table
+        - For each file in named albums:
+            - does filename exist in noname album?
+                - if no, add it to noname album
+                - if yes
+                    - does the named.ts = noname.ts?
+                        - if yes, cool, do nothing, it's safe
+                        - if no, add the named to the noname album
+        
+        - in export able include:
+            - all needed metadata for exif
+            - 'sources' array of original filepath(s)
+        '''
+
 def write_exif():
-    #todo
     todo = '''
     - for each row in export:
         - create folder if not exists
@@ -178,10 +200,36 @@ def write_exif():
     '''
     pass
 
+def can_delete_albums(): # 1-type analysis. Result = No :(
+    filenames_check = []
+    for album in db['albums'].rows:
+        if album['newfolder'][:7]=='Albums/':
+            print('\n'+'='*80 + '\nAlbum: '+album['newfolder']+'\n'+'='*80)
+            album_filenames = db['media_files'].rows_where('newfolder = ?', [album['newfolder']])
+            for album_filename in album_filenames:
+                print('\nFilename: '+album_filename['filename']+'\n'+'-'*20)
+                match = 0
+                match_files = db['media_files'].rows_where('filename = ?', [album_filename['filename']])
+                for match_file in match_files:
+                    print('> ' + match_file['path'])
+                    match+=1
+            filenames_check.append({'filename': album_filename['filename'],'album': album['newfolder'],'count': match})
+    
+    for fname in filenames_check:
+        print(fname)
+
 def fullrun(path):
     zipfiles = glob.glob(path+'*.zip')
     for zf in zipfiles:
         index_zip_media(zf)
-    get_media_meta(path)
-    match_meta()
-    prep_export()
+    #get_media_meta(path)
+    #match_meta()
+    #prep_export()
+    can_delete_albums()
+
+# Notes to make clear to users:
+# /Trashed contains deleted files. NOT in lib
+# /Hangouts contains files from hangout conversations. NOT in lib.
+# /Library contains everything else, both photos that were and were not in albums
+
+# /Albums contains a COPY of photos that were also in named albums. All files in here are safe in /Library as well.
