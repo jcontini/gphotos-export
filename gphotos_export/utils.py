@@ -1,4 +1,4 @@
-import os, glob, json, sqlite_utils, zipfile, re
+import os, glob, json, sqlite_utils, zipfile, re, time
 from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
@@ -31,12 +31,12 @@ def index_zip_media(zf):
         db['meta_files'].upsert_all(meta,alter=True,pk="path")
 
 def get_media_meta(path):
+    print(">> Parsing metadata from archives...")
     if "archives" not in db.view_names():
         db.create_view("archives", """select archive from meta_files group by archive""")
     if "albums" not in db.view_names():
         db.create_view("albums", """select path,archive,title,description from meta_files where type = 'album' order by title asc""")
     for row in db["archives"].rows:
-        print(">> Parsing metadata from %s..." % row["archive"])
         with zipfile.ZipFile(path+row["archive"], 'r') as archive:
             for row in db['meta_files'].rows_where("archive = ?", [row["archive"]]):
                 with archive.open(row["path"]) as metafile:
@@ -53,13 +53,15 @@ def get_media_meta(path):
 
                         # Extract Media info
                         else:
+                            ts_taken = time.gmtime(int(r["photoTakenTime"]["timestamp"]))
                             d = {
                                 "type": 'media',
+                                "year": int(time.strftime("%Y", ts_taken)),
                                 "title": r["title"],
                                 "ts_taken": int(r["photoTakenTime"]["timestamp"]),
                                 "ts_created": int(r["creationTime"]["timestamp"]),
                                 "ts_modified": int(r["modificationTime"]["timestamp"]),
-                                "tsf_taken": r["photoTakenTime"]["formatted"],
+                                "tsf_taken": str(time.strftime("%Y-%m-%d %H:%M:%S", ts_taken)),
                                 "geo_lat": r["geoDataExif"]["latitude"],
                                 "geo_long": r["geoDataExif"]["longitude"],
                                 "geo_alt": r["geoDataExif"]["altitude"],
@@ -85,7 +87,9 @@ def match_meta():
     if "nomatch" not in db.view_names():
         db.create_view("nomatch", """select * from media_files where metapath is null and edited is not 1""")
     if "matches" not in db.view_names():
-        db.create_view("matches", """select * from media_files where metapath is not null""")
+        db.create_view("matches", """SELECT * FROM media_files as media
+                                    LEFT JOIN meta_files AS meta ON media.metapath=meta.path
+                                    WHERE metapath is not null""")
 
     for r in db['media_files'].rows:
         fullpath, ext = os.path.splitext(r['path'])
@@ -143,16 +147,31 @@ def match_meta():
     print("%s media files matched with metadata" % matched)
     print("%s remaining with no match" % unmatched)
 
-def get_album_meta():
-    #todo
-    pass
+def prep_export():
+    print('>> Preparing new folder structure with albums...')
+    if "new_folders" not in db.view_names():
+        db.create_view("new_folders", """select * from media_files where metapath is null and edited is not 1""")
+    for r in db['media_files'].rows_where("metapath is not null"):
+        current_folder = r['path'].rsplit('/',2)[1]
+        re_pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        # If current folder has 0000-00-00 format, use date instead
+        if re.match(re_pattern,current_folder[:10]):
+            meta = db['meta_files'].get(r['metapath'])
+            folder = str(meta['year'])
+        # If Hangouts, use hangouts folder
+        elif current_folder[:8] == 'Hangout:':
+            subfolder = current_folder[9:]
+            folder = 'Hangouts/' + subfolder
+        # Otherwise, use same album name
+        else:
+            folder = current_folder
+        db['media_files'].update(r['path'],{"newfolder": folder}, alter=True)
 
 def write_exif():
     #todo
     todo = '''
-    - make table: export
-    - for each row in "matches":
-        - open 
+    - for each row in export:
+        - create folder if not exists
         - open the media file
         - update the exif data
         - save the file
@@ -165,3 +184,4 @@ def fullrun(path):
         index_zip_media(zf)
     get_media_meta(path)
     match_meta()
+    prep_export()
