@@ -144,8 +144,8 @@ def match_meta():
     print("%s media files matched with metadata" % matched)
     print("%s remaining with no match" % unmatched)
 
-def prep_export():
-    print('>> Preparing new folder structure with albums...')
+def prep_folder_structure():
+    print('>> Preparing new folder structure...')
     re_pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}'
     for r in db['media_files'].rows_where("metapath is not null"):
         current_folder = r['path'].rsplit('/',2)[1]
@@ -170,25 +170,21 @@ def prep_export():
         db['media_files'].update(r['path'],{"newfolder": folder}, alter=True)
 
 def add_album_media():
-    # Go through album files, add to library (year folders) if not already in there
-        # Some won't be like /Archive, /ProfilePhotos, etc
-    if "albums" not in db.view_names():
-        db.create_view("albums", """select newfolder from media_files where newfolder is not null group by newfolder""")
+    print('>> Scanning Albums for images not in library...')
+    library = []
+    for r in db['matches'].rows_where("newfolder LIKE 'Library/%'"):
+        library.append({'filename': r['filename'],'ts_taken': r['ts_taken']})
 
-    todo = '''
-        - prep a new 'export' table
-        - For each file in named albums:
-            - does filename exist in noname album?
-                - if no, add it to noname album
-                - if yes
-                    - does the named.ts = noname.ts?
-                        - if yes, cool, do nothing, it's safe
-                        - if no, add the named to the noname album
-        
-        - in export able include:
-            - all needed metadata for exif
-            - 'sources' array of original filepath(s)
-        '''
+    for r in db['matches'].rows_where("newfolder LIKE 'Albums/%'"):
+        lib_add = 1
+        lib_filenames = [i for i in library if i['filename'] == r['filename']]
+        if len(lib_filenames) > 0:
+            print(lib_filenames)
+            for possible_match in lib_filenames:
+                if r['ts_taken'] == possible_match['ts_taken']:
+                    lib_add = 0
+
+        db['media_files'].update(r['path'],{"lib_add": lib_add}, alter=True)
 
 def write_exif():
     todo = '''
@@ -198,34 +194,15 @@ def write_exif():
         - update the exif data
         - save the file
     '''
-    pass
-
-def can_delete_albums(): # 1-type analysis. Result = No :(
-    filenames_check = []
-    for album in db['albums'].rows:
-        if album['newfolder'][:7]=='Albums/':
-            print('\n'+'='*80 + '\nAlbum: '+album['newfolder']+'\n'+'='*80)
-            album_filenames = db['media_files'].rows_where('newfolder = ?', [album['newfolder']])
-            for album_filename in album_filenames:
-                print('\nFilename: '+album_filename['filename']+'\n'+'-'*20)
-                match = 0
-                match_files = db['media_files'].rows_where('filename = ?', [album_filename['filename']])
-                for match_file in match_files:
-                    print('> ' + match_file['path'])
-                    match+=1
-            filenames_check.append({'filename': album_filename['filename'],'album': album['newfolder'],'count': match})
-    
-    for fname in filenames_check:
-        print(fname)
 
 def fullrun(path):
     zipfiles = glob.glob(path+'*.zip')
     for zf in zipfiles:
         index_zip_media(zf)
-    #get_media_meta(path)
-    #match_meta()
-    #prep_export()
-    can_delete_albums()
+    get_media_meta(path)
+    match_meta()
+    prep_folder_structure()
+    add_album_media()
 
 # Notes to make clear to users:
 # /Trashed contains deleted files. NOT in lib
