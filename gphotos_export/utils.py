@@ -150,7 +150,6 @@ def prep_folder_structure():
     for r in db['media_files'].rows_where("metapath is not null"):
         current_folder = r['media_path'].rsplit('/',2)[1]
         meta = db['meta_files'].get(r['metapath'])
-        lib_add = 0
 
         # If Hangouts, put in /Hangouts folder
         if current_folder[:8] == 'Hangout_':
@@ -159,17 +158,16 @@ def prep_folder_structure():
 
         # If file is in trash, put in /Trash folder
         elif meta['trashed'] == 1:
-            folder = 'Trashed/' + current_folder
+            folder = 'Trashed/' #no subfolder = may overwrite files
 
         # If current folder has 0000-00-00 format, put in Library/[year] folders
         elif re.match(re_pattern,current_folder[:10]):
             folder = 'Library/' + str(meta['year'])
-            lib_add = 1
 
         # Otherwise, put in Album folder
         else:
             folder = 'Albums/' + current_folder
-        db['media_files'].update(r['media_path'],{"newfolder": folder, "lib_add": lib_add}, alter=True)
+        db['media_files'].update(r['media_path'],{"newfolder": folder}, alter=True)
 
 def add_album_media():
     print('>> Scanning Albums for images not in library...')
@@ -188,37 +186,38 @@ def add_album_media():
 
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
+def write_exif(media_path, open_file):
+    todo = '''
+    - update the exif data
+    '''
+
 def prep_folder(folder):
     if not os.path.exists(folder):
         os.makedirs(folder)
 
-def write_exif():
-    todo = '''
-    - open the media file
-    - update the exif data
-    - save the file
-    '''
+def extract_media(archive, r, export_folder):
+    prep_folder(export_folder)
+    with archive.open(r['media_path']) as media_file:
+        file_data = media_file.read()
+        new_file_path = export_folder + r['filename']
+        with open(new_file_path, "wb") as new_file:
+            new_file.write(file_data)
+            write_exif(r['media_path'],new_file)
+    db['media_files'].update(r['media_path'],{"exported": new_file_path}, alter=True)
 
 def export_files(path):
-    print(">> Extracting files with EXIF data to new folder structure...")
+    print(">> Saving media to current directory (/media)...")
     if "archives_media" not in db.view_names():
         db.create_view("archives_media", """select archive from media_files group by archive""")
     for row in db["archives_media"].rows:
         with zipfile.ZipFile(path+row["archive"], 'r') as archive:
-            for row in db['matches'].rows:
-                with archive.open(row["meta_path"]) as metafile:
-                    pass #todo
-
-    for r in db['matches'].rows:
-        prep_folder(r['newfolder'])
-        #TODO zip.extract pathfile to newfolderpath
-        #write_exif('...')
-        if r['newfolder'][7:] == 'Albums/' and r['lib_add'] == 1:
-            lib_folder = 'Library/' + str(r['year'])
-            prep_folder(lib_folder)
-            #TODO zip.extract pathfile to newfolderpath
-            #write_exif('...')
-
+            for r in db['matches'].rows_where("archive = ?", [row["archive"]]):
+                export_folder = os.getcwd() + '/media/' + r['newfolder'] + '/'
+                extract_media(archive, r, export_folder)
+                #If file is only in album, then also write to library
+                if r['lib_add'] == 1:
+                    lib_folder = os.getcwd() + '/media/Library/' + str(r['year'])
+                    extract_media(archive, r, lib_folder)
 
 def fullrun(path):
     zipfiles = glob.glob(path+'*.zip')
@@ -228,7 +227,7 @@ def fullrun(path):
     match_meta()
     prep_folder_structure()
     add_album_media()
-    #export_files(path)
+    export_files(path)
 
 # Notes to make clear to users:
 # /Trashed contains deleted files. NOT in lib
