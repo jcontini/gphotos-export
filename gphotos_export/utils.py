@@ -1,4 +1,4 @@
-import os, glob, json, sqlite_utils, zipfile, re, time
+import os, glob, json, sqlite_utils, zipfile, re, time, piexif
 from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
@@ -186,10 +186,14 @@ def add_album_media():
 
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
-def write_exif(media_path, open_file):
-    todo = '''
-    - update the exif data
-    '''
+def write_exif(r, media_file_path):
+    #TODO: Set exif_date to datetime of photo taken, not UTC
+    exif_date = str(time.strftime("%Y:%m:%d %H:%M:%S", r['ts_taken']))
+    exif_dict = {
+        'Exif': {'piexif.ExifIFD.DateTimeOriginal': exif_date},
+        '0th': {'piexif.ImageIFD.ImageDescription': r["description"].encode('utf-8')}
+    }
+    piexif.insert(piexif.dump(exif_dict), media_file_path)
 
 def prep_folder(folder):
     if not os.path.exists(folder):
@@ -202,8 +206,8 @@ def extract_media(archive, r, export_folder):
         new_file_path = export_folder + r['filename']
         with open(new_file_path, "wb") as new_file:
             new_file.write(file_data)
-            write_exif(r['media_path'],new_file)
     db['media_files'].update(r['media_path'],{"exported": new_file_path}, alter=True)
+    #write_exif(r,new_file_path)
 
 def export_files(path):
     print(">> Saving media to current directory (/media)...")
@@ -216,7 +220,7 @@ def export_files(path):
                 extract_media(archive, r, export_folder)
                 #If file is only in album, then also write to library
                 if r['lib_add'] == 1:
-                    lib_folder = os.getcwd() + '/media/Library/' + str(r['year'])
+                    lib_folder = os.getcwd() + '/media/Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
 def fullrun(path):
@@ -228,10 +232,3 @@ def fullrun(path):
     prep_folder_structure()
     add_album_media()
     export_files(path)
-
-# Notes to make clear to users:
-# /Trashed contains deleted files. NOT in lib
-# /Hangouts contains files from hangout conversations. NOT in lib.
-# /Library contains everything else, both photos that were and were not in albums
-
-# /Albums contains a COPY of photos that were also in named albums. All files in here are safe in /Library as well.
