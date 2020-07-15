@@ -1,4 +1,4 @@
-import os, glob, json, sqlite_utils, zipfile, re, time, piexif
+import os, glob, json, sqlite_utils, zipfile, re, time, piexif, imghdr
 from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
@@ -135,12 +135,8 @@ def match_meta():
             db['media_files'].update(r['media_path'],{"metapath": metapath}, alter=True)
             continue
 
-        #Catch-all
-        print("No match: %s" % filename)
-
     unmatched = db['nomatch'].count
     matched = db['matches'].count
-    print('--- Media Report ---')
     print("%s media files matched with metadata" % matched)
     print("%s remaining with no match" % unmatched)
 
@@ -187,22 +183,31 @@ def add_album_media():
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
 def write_exif(r, media_file_path):
-    exif_dict = piexif.load(media_file_path)
-    # If media has no Exif datetime, add one based on timestamp
-    if piexif.ExifIFD.DateTimeOriginal not in exif_dict['Exif']:
-        exif_date = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(r['ts_taken']))
-        exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
-        exif_update = 1
+    image_type = imghdr.what(media_file_path)
+    if image_type == None:
+        db['media_files'].update(r['media_path'],{"exif": 'Not valid image'}, alter=True)
+    elif str.upper(image_type) not in ['JPEG','TIFF']:
+        db['media_files'].update(r['media_path'],{"exif": 'Exif not supported'}, alter=True)
+    else:
+        try:
+            exif_update = 0
+            exif_dict = piexif.load(media_file_path)
+            # If media has no Exif datetime, add one based on timestamp
+            if piexif.ExifIFD.DateTimeOriginal not in exif_dict['Exif']:
+                exif_date = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(r['ts_taken']))
+                exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
+                exif_update = 1
 
-    # If there's a description, add it to file Exif
-    if r['description'] != '':
-        print(r['description'])
-        exif_dict['0th'][piexif.ImageIFD.ImageDescription] = r["description"].encode('utf-8')
-        exif_update = 1
+            # If there's a description, add it to file Exif
+            if r['description'] != '':
+                exif_dict['0th'][piexif.ImageIFD.ImageDescription] = r["description"].encode('utf-8')
+                exif_update = 1
 
-    if exif_update == 1:
-        piexif.insert(piexif.dump(exif_dict), media_file_path)
-        print('Exif Updated: ' + r['newfolder']+'/'+r['filename'])
+            if exif_update == 1:
+                piexif.insert(piexif.dump(exif_dict), media_file_path)
+                db['media_files'].update(r['media_path'],{"exif": 'Updated'}, alter=True)   
+        except:
+            db['media_files'].update(r['media_path'],{"exif": 'Issue writing Exif'}, alter=True)
 
 def prep_folder(folder):
     if not os.path.exists(folder):
@@ -218,8 +223,8 @@ def extract_media(archive, r, export_folder):
     db['media_files'].update(r['media_path'],{"exported": new_file_path}, alter=True)
     write_exif(r,new_file_path)
 
-def export_files(archives_path,export_path):
-    print(">> Saving media to current directory (/media)...")
+def export_files(archives_path,export_path,options):
+    print(">> Exporting to %smedia/..." % export_path)
     if "archives_media" not in db.view_names():
         db.create_view("archives_media", """select archive from media_files group by archive""")
     for row in db["archives_media"].rows:
@@ -232,16 +237,20 @@ def export_files(archives_path,export_path):
                     lib_folder = export_path + '/media/Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
-def fullrun(export_path):
+def fullrun(export_path, options):
     archives_path = os.getcwd() + '/'
-    print("Archives = %s" % archives_path)
-    print("Export = %s" % export_path)
-    
     zipfiles = glob.glob(archives_path+'*.zip')
-    for zf in zipfiles:
-        index_zip_media(zf)
-    get_media_meta(archives_path)
-    match_meta()
-    prep_folder_structure()
-    add_album_media()
-    export_files(archives_path,export_path)
+    if export_path[:-1] != '/':
+        export_path = export_path + '/'
+    if len(zipfiles) == 0:
+        print('No archives (.zip) found in this folder! Try again in the folder with your Google Takeout archives.')
+    else:
+        print("Archives = %s" % archives_path)
+        print("Export = %s" % export_path)
+        for zf in zipfiles:
+            index_zip_media(zf)
+        get_media_meta(archives_path)
+        match_meta()
+        prep_folder_structure()
+        add_album_media()
+        export_files(archives_path,export_path,options)

@@ -3,8 +3,11 @@ import click, utils
 
 @click.command()
 @click.argument('path')
-def main(path):
-    utils.fullrun(path)
+@click.option('--albums/--no-albums', default=False)
+
+def main(path,albums):
+    options = {'albums': albums}
+    utils.fullrun(path,options)
 
 if __name__ == '__main__':
     main()
