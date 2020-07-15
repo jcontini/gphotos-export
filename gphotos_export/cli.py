@@ -4,7 +4,6 @@ import click, utils
 @click.command()
 @click.argument('path')
 def main(path):
-    print("Archives = %s" % path)
     utils.fullrun(path)
 
 if __name__ == '__main__':

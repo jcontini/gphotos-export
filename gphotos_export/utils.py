@@ -30,12 +30,12 @@ def index_zip_media(zf):
         db['media_files'].upsert_all(media,alter=True,pk="media_path")
         db['meta_files'].upsert_all(meta,alter=True,pk="meta_path")
 
-def get_media_meta(path):
+def get_media_meta(archives_path):
     print(">> Parsing metadata from archives...")
     if "archives_meta" not in db.view_names():
         db.create_view("archives_meta", """select archive from meta_files group by archive""")
     for row in db["archives_meta"].rows:
-        with zipfile.ZipFile(path+row["archive"], 'r') as archive:
+        with zipfile.ZipFile(archives_path+row["archive"], 'r') as archive:
             for row in db['meta_files'].rows_where("archive = ?", [row["archive"]]):
                 with archive.open(row["meta_path"]) as metafile:
                     r = json.loads(metafile.read())
@@ -187,13 +187,22 @@ def add_album_media():
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
 def write_exif(r, media_file_path):
-    #TODO: Set exif_date to datetime of photo taken, not UTC
-    exif_date = str(time.strftime("%Y:%m:%d %H:%M:%S", r['ts_taken']))
-    exif_dict = {
-        'Exif': {'piexif.ExifIFD.DateTimeOriginal': exif_date},
-        '0th': {'piexif.ImageIFD.ImageDescription': r["description"].encode('utf-8')}
-    }
-    piexif.insert(piexif.dump(exif_dict), media_file_path)
+    exif_dict = piexif.load(media_file_path)
+    # If media has no Exif datetime, add one based on timestamp
+    if piexif.ExifIFD.DateTimeOriginal not in exif_dict['Exif']:
+        exif_date = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(r['ts_taken']))
+        exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
+        exif_update = 1
+
+    # If there's a description, add it to file Exif
+    if r['description'] != '':
+        print(r['description'])
+        exif_dict['0th'][piexif.ImageIFD.ImageDescription] = r["description"].encode('utf-8')
+        exif_update = 1
+
+    if exif_update == 1:
+        piexif.insert(piexif.dump(exif_dict), media_file_path)
+        print('Exif Updated: ' + r['newfolder']+'/'+r['filename'])
 
 def prep_folder(folder):
     if not os.path.exists(folder):
@@ -207,28 +216,32 @@ def extract_media(archive, r, export_folder):
         with open(new_file_path, "wb") as new_file:
             new_file.write(file_data)
     db['media_files'].update(r['media_path'],{"exported": new_file_path}, alter=True)
-    #write_exif(r,new_file_path)
+    write_exif(r,new_file_path)
 
-def export_files(path):
+def export_files(archives_path,export_path):
     print(">> Saving media to current directory (/media)...")
     if "archives_media" not in db.view_names():
         db.create_view("archives_media", """select archive from media_files group by archive""")
     for row in db["archives_media"].rows:
-        with zipfile.ZipFile(path+row["archive"], 'r') as archive:
+        with zipfile.ZipFile(archives_path+row["archive"], 'r') as archive:
             for r in db['matches'].rows_where("archive = ?", [row["archive"]]):
-                export_folder = os.getcwd() + '/media/' + r['newfolder'] + '/'
+                export_folder = export_path + '/media/' + r['newfolder'] + '/'
                 extract_media(archive, r, export_folder)
                 #If file is only in album, then also write to library
                 if r['lib_add'] == 1:
-                    lib_folder = os.getcwd() + '/media/Library/' + str(r['year']) + '/'
+                    lib_folder = export_path + '/media/Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
-def fullrun(path):
-    zipfiles = glob.glob(path+'*.zip')
+def fullrun(export_path):
+    archives_path = os.getcwd() + '/'
+    print("Archives = %s" % archives_path)
+    print("Export = %s" % export_path)
+    
+    zipfiles = glob.glob(archives_path+'*.zip')
     for zf in zipfiles:
         index_zip_media(zf)
-    get_media_meta(path)
+    get_media_meta(archives_path)
     match_meta()
     prep_folder_structure()
     add_album_media()
-    export_files(path)
+    export_files(archives_path,export_path)
