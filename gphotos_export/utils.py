@@ -1,4 +1,4 @@
-import os, glob, json, sqlite_utils, zipfile, re, time, piexif, imghdr
+import os, glob, json, sqlite_utils, zipfile, re, time, piexif
 from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
@@ -154,7 +154,7 @@ def prep_folder_structure():
 
         # If file is in trash, put in /Trash folder
         elif meta['trashed'] == 1:
-            folder = 'Trashed/' #no subfolder = may overwrite files
+            folder = 'Trashed' #no subfolder = may overwrite files
 
         # If current folder has 0000-00-00 format, put in Library/[year] folders
         elif re.match(re_pattern,current_folder[:10]):
@@ -183,37 +183,37 @@ def add_album_media():
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
 def write_exif(r, media_file_path):
-    image_type = imghdr.what(media_file_path)
-    if image_type == None:
-        db['media_files'].update(r['media_path'],{"exif": 'Not valid image'}, alter=True)
-    elif str.upper(image_type) not in ['JPEG','TIFF']:
-        db['media_files'].update(r['media_path'],{"exif": 'Exif not supported'}, alter=True)
-    else:
-        try:
-            exif_update = 0
-            exif_dict = piexif.load(media_file_path)
-            # If media has no Exif datetime, add one based on timestamp
-            if piexif.ExifIFD.DateTimeOriginal not in exif_dict['Exif']:
-                exif_date = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(r['ts_taken']))
-                exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
-                exif_update = 1
+    try:
+        #Try checking & updating EXIF first
+        exif_update = 0
+        exif_dict = piexif.load(media_file_path)
+        # If media has no Exif datetime, add one based on timestamp
+        if piexif.ExifIFD.DateTimeOriginal not in exif_dict['Exif']:
+            exif_date = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(r['ts_taken']))
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
+            exif_update = 1
 
-            # If there's a description, add it to file Exif
-            if r['description'] != '':
-                exif_dict['0th'][piexif.ImageIFD.ImageDescription] = r["description"].encode('utf-8')
-                exif_update = 1
+        # If there's a description, add it to file Exif
+        if r['description'] != '':
+            exif_dict['0th'][piexif.ImageIFD.ImageDescription] = r["description"].encode('utf-8')
+            exif_update = 1
 
-            if exif_update == 1:
-                piexif.insert(piexif.dump(exif_dict), media_file_path)
-                db['media_files'].update(r['media_path'],{"exif": 'Updated'}, alter=True)   
-        except:
-            db['media_files'].update(r['media_path'],{"exif": 'Issue writing Exif'}, alter=True)
+        if exif_update == 1:
+            piexif.insert(piexif.dump(exif_dict), media_file_path)
+            db['media_files'].update(r['media_path'],{"timeline": 'Set Exif'}, alter=True)   
+        else:
+            db['media_files'].update(r['media_path'],{"timeline": 'Original Exif'}, alter=True)  
+    except:
+        #If the file doesn't support EXIF, set file modification date instead
+        os.utime(media_file_path, (r['ts_taken'],)*2)
+        db['media_files'].update(r['media_path'],{"timeline": 'Set file mod date'}, alter=True)
 
 def prep_folder(folder):
     if not os.path.exists(folder):
         os.makedirs(folder)
 
 def extract_media(archive, r, export_folder):
+    #TODO: Check to make sure not overwriting existing files, amend name if necessary
     prep_folder(export_folder)
     with archive.open(r['media_path']) as media_file:
         file_data = media_file.read()
@@ -230,11 +230,11 @@ def export_files(archives_path,export_path,options):
     for row in db["archives_media"].rows:
         with zipfile.ZipFile(archives_path+row["archive"], 'r') as archive:
             for r in db['matches'].rows_where("archive = ?", [row["archive"]]):
-                export_folder = export_path + '/media/' + r['newfolder'] + '/'
+                export_folder = export_path + 'media/' + r['newfolder'] + '/'
                 extract_media(archive, r, export_folder)
                 #If file is only in album, then also write to library
                 if r['lib_add'] == 1:
-                    lib_folder = export_path + '/media/Library/' + str(r['year']) + '/'
+                    lib_folder = export_path + 'media/Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
 def fullrun(export_path, options):
