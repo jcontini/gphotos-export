@@ -31,7 +31,7 @@ def index_zip_media(zf):
         db['meta_files'].upsert_all(meta,alter=True,pk="meta_path")
 
 def get_media_meta(archives_path):
-    print(">> Parsing metadata from archives...")
+    print(">> Parsing metadata from archives (%s)..." % archives_path)
     if "archives_meta" not in db.view_names():
         db.create_view("archives_meta", """select archive from meta_files group by archive""")
     for row in db["archives_meta"].rows:
@@ -56,8 +56,6 @@ def get_media_meta(archives_path):
                                 "year": int(time.strftime("%Y", ts_taken)),
                                 "title": r["title"],
                                 "ts_taken": int(r["photoTakenTime"]["timestamp"]),
-                                "ts_created": int(r["creationTime"]["timestamp"]),
-                                "ts_modified": int(r["modificationTime"]["timestamp"]),
                                 "tsf_taken": str(time.strftime("%Y-%m-%d %H:%M:%S", ts_taken)),
                                 "geo_lat": r["geoDataExif"]["latitude"],
                                 "geo_long": r["geoDataExif"]["longitude"],
@@ -183,6 +181,8 @@ def add_album_media():
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
 def write_exif(r, media_file_path):
+    #Always update file modified date (master catch-all for timelines)
+    os.utime(media_file_path, (r['ts_taken'],)*2)
     try:
         #Try checking & updating EXIF first
         exif_update = 0
@@ -200,13 +200,11 @@ def write_exif(r, media_file_path):
 
         if exif_update == 1:
             piexif.insert(piexif.dump(exif_dict), media_file_path)
-            db['media_files'].update(r['media_path'],{"timeline": 'Set Exif'}, alter=True)   
+            db['media_files'].update(r['media_path'],{"exif": 'Updated Exif'}, alter=True)   
         else:
-            db['media_files'].update(r['media_path'],{"timeline": 'Original Exif'}, alter=True)  
+            db['media_files'].update(r['media_path'],{"exif": 'Original Exif'}, alter=True)  
     except:
-        #If the file doesn't support EXIF, set file modification date instead
-        os.utime(media_file_path, (r['ts_taken'],)*2)
-        db['media_files'].update(r['media_path'],{"timeline": 'Set file mod date'}, alter=True)
+        db['media_files'].update(r['media_path'],{"exif": 'No Exif'}, alter=True)
 
 def prep_folder(folder):
     if not os.path.exists(folder):
@@ -224,17 +222,18 @@ def extract_media(archive, r, export_folder):
     write_exif(r,new_file_path)
 
 def export_files(archives_path,export_path,options):
-    print(">> Exporting to %smedia/..." % export_path)
+    export_base = export_path + 'GPhotos/'
+    print(">> Exporting to %s..." % export_base)
     if "archives_media" not in db.view_names():
         db.create_view("archives_media", """select archive from media_files group by archive""")
     for row in db["archives_media"].rows:
         with zipfile.ZipFile(archives_path+row["archive"], 'r') as archive:
             for r in db['matches'].rows_where("archive = ?", [row["archive"]]):
-                export_folder = export_path + 'media/' + r['newfolder'] + '/'
+                export_folder = export_base + r['newfolder'] + '/'
                 extract_media(archive, r, export_folder)
                 #If file is only in album, then also write to library
                 if r['lib_add'] == 1:
-                    lib_folder = export_path + 'media/Library/' + str(r['year']) + '/'
+                    lib_folder = export_base + 'Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
 def fullrun(export_path, options):
@@ -245,8 +244,6 @@ def fullrun(export_path, options):
     if len(zipfiles) == 0:
         print('No archives (.zip) found in this folder! Try again in the folder with your Google Takeout archives.')
     else:
-        print("Archives = %s" % archives_path)
-        print("Export = %s" % export_path)
         for zf in zipfiles:
             index_zip_media(zf)
         get_media_meta(archives_path)
