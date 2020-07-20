@@ -1,4 +1,4 @@
-import os, glob, json, sqlite_utils, zipfile, re, time, piexif
+import os, glob, json, sqlite_utils, zipfile, re, time, piexif, imghdr
 from sqlite_utils.db import NotFoundError
 
 db_file = 'data.db'
@@ -23,6 +23,7 @@ def index_zip_media(zf):
                 media.append({
                     'media_path':filepath,
                     'filename': filepath.rsplit('/',1)[1],
+                    'size': archive.getinfo(filepath).file_size,
                     'ext': str.upper(ext[1:]),
                     'archive':zipname,
                     'edited':0
@@ -133,11 +134,6 @@ def match_meta():
             db['media_files'].update(r['media_path'],{"metapath": metapath}, alter=True)
             continue
 
-    unmatched = db['nomatch'].count
-    matched = db['matches'].count
-    print("%s media files matched with metadata" % matched)
-    print("%s remaining with no match" % unmatched)
-
 def prep_folder_structure():
     print('>> Preparing new folder structure...')
     re_pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}'
@@ -180,11 +176,8 @@ def add_album_media():
 
         db['media_files'].update(r['media_path'],{"lib_add": lib_add, "source": source}, alter=True)
 
-def write_exif(r, media_file_path):
-    #Always update file modified date (master catch-all for timelines)
-    os.utime(media_file_path, (r['ts_taken'],)*2)
+def write_datetime(r, media_file_path):
     try:
-        #Try checking & updating EXIF first
         exif_update = 0
         exif_dict = piexif.load(media_file_path)
         # If media has no Exif datetime, add one based on timestamp
@@ -205,21 +198,42 @@ def write_exif(r, media_file_path):
             db['media_files'].update(r['media_path'],{"exif": 'Original Exif'}, alter=True)  
     except:
         db['media_files'].update(r['media_path'],{"exif": 'No Exif'}, alter=True)
+    #Always update file modified date (master catch-all for timelines)
+    os.utime(media_file_path, (r['ts_taken'],)*2)
 
 def prep_folder(folder):
     if not os.path.exists(folder):
         os.makedirs(folder)
 
+def save_file(r,bytes,path):
+    with open(path, "wb") as new_file:
+        new_file.write(bytes)
+    db['media_files'].update(r['media_path'],{"exported": path}, alter=True)
+    write_datetime(r,path)
+
 def extract_media(archive, r, export_folder):
-    #TODO: Check to make sure not overwriting existing files, amend name if necessary
     prep_folder(export_folder)
+    file_path = export_folder + r['filename']
     with archive.open(r['media_path']) as media_file:
-        file_data = media_file.read()
-        new_file_path = export_folder + r['filename']
-        with open(new_file_path, "wb") as new_file:
-            new_file.write(file_data)
-    db['media_files'].update(r['media_path'],{"exported": new_file_path}, alter=True)
-    write_exif(r,new_file_path)
+        new_file_data = media_file.read()
+    if not os.path.exists(file_path):
+        save_file(r,new_file_data,file_path)
+    else:
+        new_size = r['size']
+        old_size = os.path.getsize(file_path)
+        if old_size == new_size:
+            r['note']='Skipped, file with same name & size exists'
+        else:
+            i = 0; new_file_path = file_path
+            # Create new filename to avoid overwrite
+            while os.path.exists(new_file_path):
+                name, ext = r['filename'].rsplit('.',1)
+                i += 1
+                new_file_path = export_folder + name + '_' + str(i) + '.' + ext
+            r['note'] = 'Saved to new filename to avoid overwrite'
+            save_file(r,new_file_data,new_file_path)
+
+        db['media_files'].update(r['media_path'],{"note": r['note']}, alter=True)
 
 def export_files(archives_path,export_path,options):
     export_base = export_path + 'GPhotos/'
@@ -236,6 +250,12 @@ def export_files(archives_path,export_path,options):
                     lib_folder = export_base + 'Library/' + str(r['year']) + '/'
                     extract_media(archive, r, lib_folder)
 
+def show_stats():
+    unmatched = db['nomatch'].count
+    matched = db['matches'].count
+    print("%s media files matched with metadata" % matched)
+    print("%s remaining with no match" % unmatched)
+
 def fullrun(export_path, options):
     archives_path = os.getcwd() + '/'
     zipfiles = glob.glob(archives_path+'*.zip')
@@ -251,3 +271,4 @@ def fullrun(export_path, options):
         prep_folder_structure()
         add_album_media()
         export_files(archives_path,export_path,options)
+        #show_stats()

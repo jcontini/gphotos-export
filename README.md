@@ -34,7 +34,7 @@ Limitations from me:
 
 ## Prepare GPhotos for Takeout
 Optional steps to save space on your computer & make organizing easier:
-1. Delete any [Albums](https://photos.google.com/albums) you don't need, so that the media isn't downloaded twice. Note that Google only downloads media that you uploaded - not that others have uploaded to shared albums.
+1. Delete any [Albums](https://photos.google.com/albums) you don't need, so that the media isn't downloaded twice.
 2. Check your [Archive](https://photos.google.com/archive) and delete any photos you don't want to keep.
 3. Check your [GPhotos Trash](https://photos.google.com/trash) to permanently delete any files you don't need.
 
